@@ -29,6 +29,7 @@ log("[bound] " + str(UDP_PORT))
 rec_packets = {}  # {Sequence : data}
 exp_seq = 0
 last_acked = None
+last_addr = None  # Need to track the last acked address in case we want to retransmit
 
 # Now listen for packets
 while True:
@@ -59,6 +60,7 @@ while True:
                     msg = json.dumps({"ack": decoded['sequence']})
                     log("ACKING IN ORDER PACKET: " + msg)
                     last_acked = decoded['sequence']
+                    last_addr = addr
                     if sock.sendto(msg, addr) < len(msg):
                         log("[error] unable to fully send packet")
 
@@ -72,6 +74,7 @@ while True:
                             if sock.sendto(msg, addr) < len(msg):
                                 log("[error] unable to fully send packet")
                             last_acked = exp_seq
+                            last_addr = addr
                             exp_seq += rec_packets[exp_seq]
                         else:
                             break
@@ -99,5 +102,7 @@ while True:
             raise e
     else:
         log("[error] timeout")
-        # TODO encode timeout behavior (dropped ACK, resend ACK)
-        # TODO we need to track the most recently sent (or lowest in-flight) ACK so we can resend it
+        msg = json.dumps({"ack": last_acked})
+        log("RESENDING DROPPED ACK: " + msg)
+        if sock.sendto(msg, last_addr) < len(msg):
+            log("[error] unable to fully send packet")
