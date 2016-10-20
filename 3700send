@@ -20,55 +20,75 @@ UDP_PORT = int(IP_PORT[IP_PORT.find(":")+1:])
 dest = (UDP_IP, UDP_PORT)
 
 # Set up the socket
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.settimeout(TIMEOUT)
 
+window = 1
+packets_in_flight = {}  # {Sequence : data}
+more_data = True
+
 def log(string):
-  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+    sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
 
 def send_next_packet():
-  global SEQUENCE
+    global SEQUENCE
 
-  data = sys.stdin.read(DATA_SIZE)
-  if (len(data) > 0):
-    msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
-    SEQUENCE += len(data)
+    data = sys.stdin.read(DATA_SIZE)
+    if (len(data) > 0):
+        msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
+        packets_in_flight['SEQUENCE'] = data
 
-    if sock.sendto(msg, dest) < len(msg):
-      log("[error] unable to fully send packet")
+        if sock.sendto(msg, dest) < len(msg):
+            log("[error] unable to fully send packet")
+        else:
+            log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+        SEQUENCE += len(data)
+        return True
     else:
-      log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
-    return True
-  else:
-    return False
+        return False
 
 # Send first packet
 send_next_packet()
 
 # Now read in data, send packets
-while True:
-  log("ABOUT TO SLEEP")
-  result = sock.recvfrom(MSG_SIZE)
+while more_data:
+    log("ABOUT TO SLEEP")
+    result = sock.recvfrom(MSG_SIZE)
 
-  if result:
-    (data, addr) = result
-    try:
-      decoded = json.loads(data)
+    if result:
+        (data, addr) = result
+        try:
+            decoded = json.loads(data)
 
-      # TODO this is where our logic is going to live
+            # If there is an ack, send next packet
+            if decoded['ack'] in packets_in_flight:
+                log("[recv ack] " + decoded['ack'])
+                window += 1
+                del packets_in_flight[decoded['ack']]
 
-      # If there is an ack, send next packet
-      if decoded['ack'] == SEQUENCE:
-        log("[recv ack] " + str(SEQUENCE))
-
-        # Try to send next packet; break if no more data
-        if (not send_next_packet()):
-          break
-    except (ValueError, KeyError, TypeError):
-      log("[recv corrupt packet]")
-  else:
-    log("[error] timeout")
-    sys.exit(-1)
+                # While our congestion window isn't full and we aren't still waiting on a forever old packet:
+                while len(packets_in_flight) < window and \
+                        not (packets_in_flight[max(packets_in_flight)] - packets_in_flight[min(packets_in_flight)] > window * MSG_SIZE):
+                    # Try to send next packet; break if no more data
+                    if (not send_next_packet()):
+                        more_data = False
+                        break
+            else:
+                pass
+                # TODO figure out this behavior (I think this is duplicated ACKs, so we just drop it)
+        except (ValueError, KeyError, TypeError):
+            log("[recv corrupt packet]")
+    else:  # decrease the window and retransmit the lowest unACKed packet
+        log("[error] timeout")
+        window -= 1  # Decrease the window
+        msg = packets_in_flight[min(packets_in_flight)]  # Get the lowest unACKed packet
+        # retransmit that bad boy and log it
+        if sock.sendto(msg, dest) < len(msg):
+            log("[error] unable to fully send packet")
+        else:
+            log("[send data] " + str(min(packets_in_flight)) + " (" + str(len(msg)) + ")")
 
 sock.sendto(json.dumps({"eof": True, "data": "", "sequence": SEQUENCE, "ack": False}), dest)
+sock.settimeout(TIMEOUT*2)
+log('[completed]')
 sys.exit(0)

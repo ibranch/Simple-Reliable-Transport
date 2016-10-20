@@ -8,7 +8,7 @@ import select
 import json
 
 def log(string):
-  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+    sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
 
 MSG_SIZE = 1500
 TIMEOUT = 30
@@ -18,7 +18,7 @@ UDP_IP = "127.0.0.1"
 UDP_PORT = 0
 
 # Set up the socket
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((UDP_IP, UDP_PORT))
 sock.settimeout(TIMEOUT)
 
@@ -26,39 +26,78 @@ sock.settimeout(TIMEOUT)
 UDP_PORT = sock.getsockname()[1]
 log("[bound] " + str(UDP_PORT))
 
+rec_packets = {}  # {Sequence : data}
+exp_seq = 0
+last_acked = None
+
 # Now listen for packets
 while True:
-  result = sock.recvfrom(MSG_SIZE)
+    result = sock.recvfrom(MSG_SIZE)
 
-  # If nothing is ready, we hit the timeout
-  if result:
-    (data, addr) = result
+    # If nothing is ready, we hit the timeout
+    if result:
+        (data, addr) = result
 
-    try:
-      decoded = json.loads(data)
+        try:
+            decoded = json.loads(data)
 
-      # If the EOF flag is set, exit
-      if (decoded['eof']):
-        log("[completed]")
-        sys.exit(0)
+            # If the EOF flag is set, ACK the FIN and exit
+            if (decoded['eof']):
+                log("[completed]")
+                msg = json.dumps({'ack': 'eof'})
+                if sock.sendto(msg, addr) < len(msg):
+                    log('[error] unable to fully send shutdown packet')
+                sys.exit(0)
 
-      # If there is data, we accept it and print it out
-      if (decoded['data']):
-        # If we receive data, we assume it's in-order
-        # You will need to do much more here
-        # TODO I think this is where the bulk of our code is going to live
-        log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
-        sys.stdout.write(decoded['data'])
+            # If there is data, we accept it and print it out
+            if (decoded['data']):
+                rec_packets[decoded['sequence']] = len(decoded['data'])  # add the {sequence : len(data)} pair to rec_packets
+                if decoded['sequence'] == exp_seq:
+                    log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
 
-      # Send back an ack to the sender
-      msg = json.dumps({"ack": decoded['sequence'] + len(decoded['data'])})
-      log("ABOUT TO SEND " + msg)
-      if sock.sendto(msg, addr) < len(msg):
-        log("[error] unable to fully send packet")
+                    # ACK the in-order packet
+                    msg = json.dumps({"ack": decoded['sequence']})
+                    log("ACKING IN ORDER PACKET: " + msg)
+                    last_acked = decoded['sequence']
+                    if sock.sendto(msg, addr) < len(msg):
+                        log("[error] unable to fully send packet")
 
-    except (ValueError, KeyError, TypeError) as e:
-      log("[recv corrupt packet]")
-      raise e
-  else:
-    log("[error] timeout")
-    sys.exit(-1)
+                    # Advance our expected sequence number to account for received out-of-order packets
+                    # Also, ACK all of those received out-of-order packets that are now in-order
+                    exp_seq += len(decoded['data'])
+                    while exp_seq < max(rec_packets):
+                        if rec_packets[exp_seq]:
+                            msg = json.dumps({"ack": exp_seq})
+                            log("ACKING OUT OF ORDER PACKET: " + msg)
+                            if sock.sendto(msg, addr) < len(msg):
+                                log("[error] unable to fully send packet")
+                            last_acked = exp_seq
+                            exp_seq += rec_packets[exp_seq]
+                        else:
+                            break
+                elif decoded['sequence'] > exp_seq:
+                    log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (out-of-order)")
+                    # DO NOT ACK out of order packets until they can be put back in order. This is tightly coupled (yeah, I know)
+                    # with the sender's implementation of in-flight packets. Basically the sender maintains a list of in-flight
+                    # packets and uses the length of that list and the difference in max/min sequence numbers in that list to
+                    # determine if it can send more data. It removes packets from that list when they are ACKed.
+                    # The 'if' part of this conditional handles ACKing out of order packets when they become in-order
+                else:
+                    log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") IGNORED")
+                    # send an ACK for this guy in case it's a duplicate caused by the original ACK dropping and
+                    # the sender thinks we haven't gotten it yet. We don't want to update last_acked here because last_acked
+                    # should either already have this value or it should have a higher value (last_acked always increases)
+                    msg = json.dumps({"ack": decoded['sequence']})
+                    log("ACKING DUPLICATE PACKET: " + msg)
+                    if sock.sendto(msg, addr) < len(msg):
+                        log("[error] unable to fully send packet")
+
+                sys.stdout.write(decoded['data'])
+
+        except (ValueError, KeyError, TypeError) as e:
+            log("[recv corrupt packet]")
+            raise e
+    else:
+        log("[error] timeout")
+        # TODO encode timeout behavior (dropped ACK, resend ACK)
+        # TODO we need to track the most recently sent (or lowest in-flight) ACK so we can resend it
