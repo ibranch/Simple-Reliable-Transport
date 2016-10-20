@@ -1,8 +1,5 @@
 #!/usr/bin/python -u
-#
-# CS3700, Spring 2015
-# Project 2 Starter Code
-#
+
 
 import sys
 import socket
