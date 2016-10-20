@@ -55,6 +55,8 @@ while True:
     try:
       decoded = json.loads(data)
 
+      # TODO this is where our logic is going to live
+
       # If there is an ack, send next packet
       if decoded['ack'] == SEQUENCE:
         log("[recv ack] " + str(SEQUENCE))
