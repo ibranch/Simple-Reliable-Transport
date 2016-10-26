@@ -27,17 +27,20 @@ window = 1
 packets_in_flight = {}  # {Sequence : data}
 more_data = True
 
+
 def log(string):
     sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
 
 def send_next_packet():
     global SEQUENCE
 
     data = sys.stdin.read(DATA_SIZE)
-    log('got data: ' + data)
-    if (len(data) > 0):
+    if len(data) > 0:
         msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
-        packets_in_flight['SEQUENCE'] = data
+        packets_in_flight[SEQUENCE] = data
+        print('packets in flight:')
+        print(str(packets_in_flight.keys()))
 
         if sock.sendto(msg, dest) < len(msg):
             log("[error] unable to fully send packet")
@@ -58,27 +61,35 @@ while more_data:
 
     if result:
         (data, addr) = result
-        try:
-            decoded = json.loads(data)
+        decoded = json.loads(data)
+        log('got decoded')
 
-            # If there is an ack, send next packet
-            if decoded['ack'] in packets_in_flight:
-                log("[recv ack] " + decoded['ack'])
+        if decoded['ack'] and decoded['sequence'] in packets_in_flight:
+                log("[recv ack] " + str(decoded['sequence']))
                 window += 1
-                del packets_in_flight[decoded['ack']]
+                del packets_in_flight[decoded['sequence']]
+                log('did del')
+                log('window : ' + str(window))
+                log('packets in flight : ' + str(packets_in_flight.keys()))
+		try:
+		    max_sequence = max(packets_in_flight)
+		except ValueError:
+		    max_sequence = 0
 
+		try:
+		    min_sequence = min(packets_in_flight)
+		except ValueError:
+		    min_sequence = 0
                 # While our congestion window isn't full and we aren't still waiting on a forever old packet:
-                while len(packets_in_flight) < window and \
-                        not (packets_in_flight[max(packets_in_flight)] - packets_in_flight[min(packets_in_flight)] > window * MSG_SIZE):
+                while len(packets_in_flight) < window and not ((max_sequence - min_sequence) > window * MSG_SIZE):
                     # Try to send next packet; break if no more data
-                    if (not send_next_packet()):
+                    log('trying to send next packet')
+                    if not send_next_packet():
                         more_data = False
                         break
-            else:
-                pass
-                # TODO figure out this behavior (I think this is duplicated ACKs, so we just drop it)
-        except (ValueError, KeyError, TypeError):
-            log("[recv corrupt packet]")
+        else:
+            pass
+
     else:  # decrease the window and retransmit the lowest unACKed packet
         log("[error] timeout")
         window -= 1  # Decrease the window

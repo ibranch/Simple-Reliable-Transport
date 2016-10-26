@@ -33,7 +33,6 @@ last_acked = (None, None)  # (Sequence, addr)
 # Now listen for packets
 while True:
     result = sock.recvfrom(MSG_SIZE)
-    log('got result: ' + str(result))
 
     # If nothing is ready, we hit the timeout
     if result:
@@ -57,7 +56,7 @@ while True:
                     log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
 
                     # ACK the in-order packet
-                    msg = json.dumps({"ack": decoded['sequence']})
+                    msg = json.dumps({"ack": True, "sequence": decoded['sequence']})
                     log("ACKING IN ORDER PACKET: " + msg)
                     last_acked = (decoded['sequence'], addr)
                     if sock.sendto(msg, addr) < len(msg):
@@ -68,7 +67,7 @@ while True:
                     exp_seq += len(decoded['data'])
                     while exp_seq < max(rec_packets):
                         if rec_packets[exp_seq]:
-                            msg = json.dumps({"ack": exp_seq})
+                            msg = json.dumps({"ack": True, "sequence": exp_seq})
                             log("ACKING OUT OF ORDER PACKET: " + msg)
                             if sock.sendto(msg, addr) < len(msg):
                                 log("[error] unable to fully send packet")
@@ -88,7 +87,7 @@ while True:
                     # send an ACK for this guy in case it's a duplicate caused by the original ACK dropping and
                     # the sender thinks we haven't gotten it yet. We don't want to update last_acked here because last_acked
                     # should either already have this value or it should have a higher value (last_acked always increases)
-                    msg = json.dumps({"ack": decoded['sequence']})
+                    msg = json.dumps({"ack": True, "sequence": decoded['sequence']})
                     log("ACKING DUPLICATE PACKET: " + msg)
                     if sock.sendto(msg, addr) < len(msg):
                         log("[error] unable to fully send packet")
@@ -100,7 +99,7 @@ while True:
             raise e
     else:
         log("[error] timeout")
-        msg = json.dumps({"ack": last_acked[0]})
+        msg = json.dumps({"ack": True, "sequence": last_acked[0]})
         log("RESENDING DROPPED ACK: " + msg)
         if sock.sendto(msg, last_acked[1]) < len(msg):
             log("[error] unable to fully send packet")
