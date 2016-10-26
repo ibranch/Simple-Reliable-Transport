@@ -80,7 +80,6 @@ while True:
         try:
             decoded = json.loads(data)
 
-            log("got data")
             # If the EOF flag is set, exit
             if decoded['eof']:
                 log("[completed]")
