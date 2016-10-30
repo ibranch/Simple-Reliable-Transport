@@ -28,7 +28,7 @@ dest = (UDP_IP, UDP_PORT)
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.settimeout(TIMEOUT)
 
-window = 1
+window = 500
 packets_in_flight = {}  # {Sequence : data}
 last_resent = time.time()
 
@@ -38,18 +38,18 @@ def log(string):
 
 def send_next_packet():
     global SEQUENCE
-
-    data = sys.stdin.read(DATA_SIZE)
-    if (len(data) > 0):
-        #log("MORE DATA")
-        msg = json.dumps({"sequence": int(SEQUENCE), "data": data, "eof": False})
-        packets_in_flight[int(SEQUENCE)] = data
-        SEQUENCE += len(data)
-        send_msg(msg, data)
-        return True
-    else:
-        log("NO MORE DATA")
-        return False
+    allowed_to_send = window - len(packets_in_flight)
+    for i in range(0, allowed_to_send):
+        data = sys.stdin.read(DATA_SIZE)
+        if len(data) > 0:
+            msg = json.dumps({"sequence": int(SEQUENCE), "data": data, "eof": False})
+            packets_in_flight[int(SEQUENCE)] = data
+            SEQUENCE += len(data)
+            send_msg(msg, data)
+        else:
+            log("NO MORE DATA")
+            return False
+    return True
 
 
 def send_msg(msg, data):
@@ -60,9 +60,10 @@ def send_msg(msg, data):
 
 
 def send_last_packet_in_flight():
-    global SEQUENCE
+    global window
     msg = json.dumps({"sequence": min(packets_in_flight), "data": packets_in_flight[min(packets_in_flight)], "eof": False})
     send_msg(msg, packets_in_flight[min(packets_in_flight)])
+    window = max(window - 1, 1)
     main()
 
 
@@ -70,7 +71,6 @@ def recieve_ack():
     global window
     window += 1
     del packets_in_flight[min(packets_in_flight)]
-    #log("deleting packet in flight")
 
 
 def finish_program():
@@ -95,9 +95,9 @@ def main():
 
                     decoded = json.loads(data)
                     # If there is an ack, send next packet
-                    if decoded['ack'] == SEQUENCE:
+                    if decoded['ack'] == (min(packets_in_flight) + len(packets_in_flight[min(packets_in_flight)])):
+                        log("[recv ack] " + str(min(packets_in_flight) + len(packets_in_flight[min(packets_in_flight)])))
                         recieve_ack()
-                        log("[recv ack] " + str(SEQUENCE))
 
                         # Try to send next packet; break if no more data
                         if not send_next_packet() and not packets_in_flight:
@@ -107,13 +107,13 @@ def main():
                         continue
                     else:
                         log("ACK NOT SEQ MINE")
-                        #log(json.dumps(SEQUENCE))
-                        #log(json.dumps(decoded))
+                        log(json.dumps(SEQUENCE))
+                        log(json.dumps(decoded))
                 except (ValueError, KeyError, TypeError):
                     log("[recv corrupt packet]")
     except socket.timeout:
         global last_resent
-        if time.time() - last_resent > .1:
+        if time.time() - last_resent > TIMEOUT:
             last_resent = time.time()
             log("resending packets")
             send_last_packet_in_flight()
